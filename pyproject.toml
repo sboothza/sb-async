@@ -1,0 +1,29 @@
+[build-system]
+requires = ["pip>=24.3.1",
+    "setuptools>=80.9.0",
+    "wheel>=0.45.1"]
+
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sb-async"
+readme = "README.md"
+urls = { "homepage" = "https://github.com/sboothza/sb-async" }
+version = "0.0.2"
+authors = [
+    { name = "Stephen Booth", email = "stephen.booth.za@gmail.com" },
+]
+description = "A high-performance async thread pool with process-based execution and forceful job termination"
+requires-python = ">=3.12"
+classifiers = [    
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = []
+keywords = ["async", "threadpool", "multiprocessing", "asyncio", "parallel", "concurrent"]
+

@@ -1,0 +1,22 @@
+# Async Thread Pool Library Requirements
+# This library uses only Python standard library modules
+
+# No external dependencies required
+# The library uses only built-in Python modules:
+# - asyncio
+# - multiprocessing
+# - threading
+# - os
+# - signal
+# - time
+# - queue
+
+# Python version requirement
+# Python >= 3.8
+
+# Optional development dependencies (uncomment if needed for development)
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
+# black>=22.0.0
+# flake8>=5.0.0
+# mypy>=0.991
