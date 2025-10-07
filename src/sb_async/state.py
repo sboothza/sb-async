@@ -1,0 +1,6 @@
+class WorkerState:
+    def __init__(self):
+        ...
+
+    def unwrap(self):
+        ...

@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 name = "sb-async"
 readme = "README.md"
 urls = { "homepage" = "https://github.com/sboothza/sb-async" }
-version = "0.0.2"
+version = "0.0.3"
 authors = [
     { name = "Stephen Booth", email = "stephen.booth.za@gmail.com" },
 ]

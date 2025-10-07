@@ -1,39 +1,38 @@
 import asyncio
 import multiprocessing
 import os
-import queue
 import signal
 import threading
 from asyncio import Semaphore
 
 from src.sb_async.async_queue import AsyncQueue
+from src.sb_async.state import WorkerState
 
-def _worker_process(job_queue, result_queue, worker_id):
-    """Worker process that continuously processes jobs"""
+def _worker_process(queue, worker_id, shutdown_event, state: WorkerState):
+    """Worker process that continuously processes jobs from AsyncQueue"""
     print(f"Worker process {worker_id} started")
+    state.unwrap()
     try:
-        while True:
+        while not shutdown_event.is_set():
             try:
-                # Get job from queue with timeout
-                job = job_queue.get(timeout=1.0)
-                if job is None:  # Shutdown signal
+                # Get job from AsyncQueue with timeout
+                job = queue.pop(timeout=1.0)
+                if job is None:  # No more jobs
                     break
-                
+
                 # Process the job
-                result = job.work()
-                result_queue.put((worker_id, result, None))
-                
-            except queue.Empty:
-                continue
+                result = job.work(state)
+                print(f"Job completed in worker {worker_id}")
+
             except Exception as e:
-                result_queue.put((worker_id, None, e))
+                print(f"Job failed in worker {worker_id}: {e}")
     except KeyboardInterrupt:
         pass
     finally:
         print(f"Worker process {worker_id} shutting down")
 
 class AsyncThreadPool[T]:
-    def __init__(self, max_workers: int, queue: AsyncQueue[T], timeout: float = 1.0):
+    def __init__(self, max_workers: int, queue: AsyncQueue[T], state: WorkerState, timeout: float = 1.0):
         self.max_workers = max_workers
         self.queue = queue
         self.timeout = timeout
@@ -42,11 +41,11 @@ class AsyncThreadPool[T]:
         self._tasks = []
         self._worker_processes = []
         self._process_lock = threading.Lock()
-        
-        # Inter-process communication
-        self._job_queue = multiprocessing.Queue()
-        self._result_queue = multiprocessing.Queue()
-        
+        self.worker_state = state
+
+        # Shutdown event for worker processes
+        self._shutdown_event = multiprocessing.Event()
+
         # Start worker processes
         self._start_worker_processes()
 
@@ -55,64 +54,31 @@ class AsyncThreadPool[T]:
         for i in range(self.max_workers):
             process = multiprocessing.Process(
                 target=_worker_process,
-                args=(self._job_queue, self._result_queue, i)
+                args=(self.queue, i, self._shutdown_event, self.worker_state)
             )
             process.start()
             self._worker_processes.append(process)
 
     async def work(self):
-        """Process all items in the queue"""
-        self._tasks = [
-            asyncio.create_task(self._worker())
-            for _ in range(self.max_workers)
-        ]
-        
-        # Wait for all tasks to complete
-        await asyncio.gather(*self._tasks, return_exceptions=True)
-
-    async def _worker(self):
-        """Worker coroutine that distributes jobs to worker processes"""
+        """Process all items in the queue using worker processes"""
+        # Worker processes will directly consume from the AsyncQueue
+        # We just need to wait for them to complete or for shutdown
         while not self._shutdown:
-            try:
-                async with self.semaphore:
-                    job = await asyncio.wait_for(self.queue.pop(self.timeout), timeout=self.timeout + 1.0)
-                    if job is None:
-                        break
-                    
-                    # Submit job to worker process pool
-                    self._job_queue.put(job)
-                    print(f"Job submitted to worker process pool")
-                    
-                    # Don't wait for result - let jobs run as long as they need
-                    # The worker processes will handle the job execution
-                            
-            except asyncio.TimeoutError:
-                if self._shutdown:
-                    break
-                print("Job timed out, continuing...")
-            except asyncio.CancelledError:
+            await asyncio.sleep(0.1)
+
+            # Check if all worker processes are still alive
+            alive_processes = [p for p in self._worker_processes if p.is_alive()]
+            if not alive_processes:
+                print("All worker processes have completed")
                 break
-            except Exception as e:
-                if self._shutdown:
-                    break
-                print(f"Error processing job: {e}")
 
     def shutdown(self):
         """Shutdown the process pool immediately"""
         self._shutdown = True
-        
-        # Cancel all async tasks immediately
-        for task in self._tasks:
-            if not task.done():
-                task.cancel()
-        
-        # Send shutdown signals to all worker processes
-        for _ in self._worker_processes:
-            try:
-                self._job_queue.put(None)  # Shutdown signal
-            except:
-                pass  # Queue might be full or closed
-        
+
+        # Signal all worker processes to shut down
+        self._shutdown_event.set()
+
         # Forcefully kill all worker processes
         with self._process_lock:
             for process in self._worker_processes:
@@ -129,25 +95,15 @@ class AsyncThreadPool[T]:
                 except (OSError, ProcessLookupError):
                     # Process already dead
                     pass
-        
+
         print("shutdown complete")
 
     async def shutdown_async(self):
         """Async version of shutdown for proper cleanup"""
         self._shutdown = True
-        
-        # Cancel all async tasks
-        for task in self._tasks:
-            if not task.done():
-                task.cancel()
 
-        # Wait for tasks to complete cancellation
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-
-        # Send shutdown signals to all worker processes
-        for _ in self._worker_processes:
-            self._job_queue.put(None)  # Shutdown signal
+        # Signal all worker processes to shut down
+        self._shutdown_event.set()
 
         # Forcefully kill all worker processes
         with self._process_lock:
@@ -165,5 +121,3 @@ class AsyncThreadPool[T]:
                 except (OSError, ProcessLookupError):
                     # Process already dead
                     pass
-            
-        self._tasks = []
