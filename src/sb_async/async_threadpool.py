@@ -4,19 +4,23 @@ import os
 import signal
 import threading
 from asyncio import Semaphore
+from typing import Optional
 
-from src.sb_async.async_queue import AsyncQueue
-from src.sb_async.state import WorkerState
+from .async_helpers import run_async_as_sync
+from .async_queue import AsyncQueue
+from .state import WorkerState
 
-def _worker_process(queue, worker_id, shutdown_event, state: WorkerState):
+def _worker_process(queue:AsyncQueue, worker_id, shutdown_event, state: WorkerState):
     """Worker process that continuously processes jobs from AsyncQueue"""
     print(f"Worker process {worker_id} started")
     state.unwrap()
+    queue.unwrap()
     try:
         while not shutdown_event.is_set():
             try:
                 # Get job from AsyncQueue with timeout
-                job = queue.pop(timeout=1.0)
+                print("getting from queue")
+                job = run_async_as_sync(queue.pop(timeout=5.0))
                 if job is None:  # No more jobs
                     break
 
@@ -38,8 +42,7 @@ class AsyncThreadPool[T]:
         self.timeout = timeout
         self.semaphore = Semaphore(max_workers)
         self._shutdown = False
-        self._tasks = []
-        self._worker_processes = []
+        self._worker_processes: list[multiprocessing.Process] = []
         self._process_lock = threading.Lock()
         self.worker_state = state
 
