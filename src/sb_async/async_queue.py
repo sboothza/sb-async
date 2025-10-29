@@ -1,6 +1,6 @@
 import asyncio
 
-from src.sb_async.async_job import AsyncJob
+from async_job import AsyncJob
 
 class AsyncQueue[T]:
     def __init__(self):

@@ -1,35 +1,9 @@
 import asyncio
-import multiprocessing
-import os
-import signal
-import threading
+import concurrent.futures
 from asyncio import Semaphore
 
-from src.sb_async.async_queue import AsyncQueue
-from src.sb_async.state import WorkerState
-
-def _worker_process(queue, worker_id, shutdown_event, state: WorkerState):
-    """Worker process that continuously processes jobs from AsyncQueue"""
-    print(f"Worker process {worker_id} started")
-    state.unwrap()
-    try:
-        while not shutdown_event.is_set():
-            try:
-                # Get job from AsyncQueue with timeout
-                job = queue.pop(timeout=1.0)
-                if job is None:  # No more jobs
-                    break
-
-                # Process the job
-                result = job.work(state)
-                print(f"Job completed in worker {worker_id}")
-
-            except Exception as e:
-                print(f"Job failed in worker {worker_id}: {e}")
-    except KeyboardInterrupt:
-        pass
-    finally:
-        print(f"Worker process {worker_id} shutting down")
+from async_queue import AsyncQueue
+from state import WorkerState
 
 class AsyncThreadPool[T]:
     def __init__(self, max_workers: int, queue: AsyncQueue[T], state: WorkerState, timeout: float = 1.0):
@@ -39,85 +13,93 @@ class AsyncThreadPool[T]:
         self.semaphore = Semaphore(max_workers)
         self._shutdown = False
         self._tasks = []
-        self._worker_processes = []
-        self._process_lock = threading.Lock()
         self.worker_state = state
-
-        # Shutdown event for worker processes
-        self._shutdown_event = multiprocessing.Event()
-
-        # Start worker processes
-        self._start_worker_processes()
-
-    def _start_worker_processes(self):
-        """Start the worker processes"""
-        for i in range(self.max_workers):
-            process = multiprocessing.Process(
-                target=_worker_process,
-                args=(self.queue, i, self._shutdown_event, self.worker_state)
-            )
-            process.start()
-            self._worker_processes.append(process)
+        
+        # Create asyncio executor (thread pool)
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self._futures = []  # Track running futures
 
     async def work(self):
-        """Process all items in the queue using worker processes"""
-        # Worker processes will directly consume from the AsyncQueue
-        # We just need to wait for them to complete or for shutdown
-        while not self._shutdown:
-            await asyncio.sleep(0.1)
+        """Process all items in the queue using thread pool"""
+        # Create async workers that consume from the queue
+        self._tasks = [
+            asyncio.create_task(self._worker(i))
+            for i in range(self.max_workers)
+        ]
+        
+        # Wait for all tasks to complete
+        await asyncio.gather(*self._tasks, return_exceptions=True)
 
-            # Check if all worker processes are still alive
-            alive_processes = [p for p in self._worker_processes if p.is_alive()]
-            if not alive_processes:
-                print("All worker processes have completed")
-                break
+    async def _worker(self, worker_id: int):
+        """Worker coroutine that processes jobs from the queue"""
+        print(f"Worker {worker_id} started")
+        try:
+            while not self._shutdown:
+                try:
+                    async with self.semaphore:
+                        # Get job from queue
+                        job = await self.queue.pop(self.timeout)
+                        if job is None:  # No more jobs
+                            break
+                        
+                        print(f"Worker {worker_id} processing job")
+                        
+                        # Submit job to thread pool for execution
+                        loop = asyncio.get_event_loop()
+                        future = loop.run_in_executor(self._executor, job.work, self.worker_state)
+                        self._futures.append(future)
+                        
+                        try:
+                            # Wait for job completion
+                            await future
+                            print(f"Worker {worker_id} completed job")
+                        except Exception as e:
+                            print(f"Worker {worker_id} job failed: {e}")
+                        finally:
+                            # Remove future from tracking
+                            if future in self._futures:
+                                self._futures.remove(future)
+                                
+                except asyncio.TimeoutError:
+                    if self._shutdown:
+                        break
+                    continue
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    if self._shutdown:
+                        break
+                    print(f"Worker {worker_id} error: {e}")
+                    
+        finally:
+            print(f"Worker {worker_id} shutting down")
 
     def shutdown(self):
-        """Shutdown the process pool immediately"""
+        """Shutdown the thread pool"""
         self._shutdown = True
-
-        # Signal all worker processes to shut down
-        self._shutdown_event.set()
-
-        # Forcefully kill all worker processes
-        with self._process_lock:
-            for process in self._worker_processes:
-                try:
-                    if process.is_alive():
-                        print(f"Killing worker process {process.pid}")
-                        os.kill(process.pid, signal.SIGTERM)
-                        # Give it a moment to terminate gracefully
-                        process.join(timeout=1.0)
-                        if process.is_alive():
-                            # Force kill if it didn't terminate
-                            print(f"Force killing worker process {process.pid}")
-                            os.kill(process.pid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    # Process already dead
-                    pass
-
+        
+        # Cancel all async tasks
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+        
+        # Shutdown executor (will wait for running tasks to complete)
+        self._executor.shutdown(wait=False)
+        
         print("shutdown complete")
 
     async def shutdown_async(self):
         """Async version of shutdown for proper cleanup"""
         self._shutdown = True
+        
+        # Cancel all async tasks
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
 
-        # Signal all worker processes to shut down
-        self._shutdown_event.set()
+        # Wait for tasks to complete
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
 
-        # Forcefully kill all worker processes
-        with self._process_lock:
-            for process in self._worker_processes:
-                try:
-                    if process.is_alive():
-                        print(f"Killing worker process {process.pid}")
-                        os.kill(process.pid, signal.SIGTERM)
-                        # Give it a moment to terminate gracefully
-                        process.join(timeout=2.0)
-                        if process.is_alive():
-                            # Force kill if it didn't terminate
-                            print(f"Force killing worker process {process.pid}")
-                            os.kill(process.pid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    # Process already dead
-                    pass
+        # Shutdown executor
+        self._executor.shutdown(wait=False)

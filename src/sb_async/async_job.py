@@ -1,4 +1,4 @@
-from src.sb_async.state import WorkerState
+from state import WorkerState
 
 class AsyncJob[T]:
     def __init__(self, state, item: T):
